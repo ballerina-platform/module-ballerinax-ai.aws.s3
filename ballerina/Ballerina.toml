@@ -1,0 +1,113 @@
+[package]
+distribution = "2201.12.0"
+org = "ballerinax"
+name = "ai.aws.s3"
+version = "1.0.0"
+license = ["Apache-2.0"]
+icon = "icon.png"
+authors = ["Ballerina"]
+keywords = ["Vendor/Amazon", "Cloud/Object Storage", "Area/AI & Machine Learning", "Type/Data Loader", "s3"]
+repository = "https://github.com/ballerina-platform/module-ballerinax-ai.aws.s3"
+
+[platform.java21]
+graalvmCompatible = true
+
+# Native in-memory text extractor (Apache Tika) for this package.
+[[platform.java21.dependency]]
+groupId = "io.ballerina.lib"
+artifactId = "ai.aws.s3-native"
+version = "1.0.0"
+path = "../native/build/libs/ai.aws.s3-native-1.0.0-SNAPSHOT.jar"
+
+# Apache Tika: the PDF parser module only. Dispatch is explicit (PDFParser) — Tika's
+# AutoDetectParser is never used. The OOXML formats are handled by POI directly rather than
+# by Tika's OOXMLParser; see the note on commons-compress below and TextExtractor.java.
+[[platform.java21.dependency]]
+groupId = "org.apache.tika"
+artifactId = "tika-core"
+version = "3.2.2"
+
+[[platform.java21.dependency]]
+groupId = "org.apache.tika"
+artifactId = "tika-parser-pdf-module"
+version = "3.2.2"
+
+# Apache POI: OOXML (.docx/.pptx) parsing and text extraction.
+[[platform.java21.dependency]]
+groupId = "org.apache.poi"
+artifactId = "poi"
+version = "5.4.1"
+
+
+[[platform.java21.dependency]]
+groupId = "org.apache.poi"
+artifactId = "poi-ooxml"
+version = "5.4.1"
+
+[[platform.java21.dependency]]
+groupId = "org.apache.poi"
+artifactId = "poi-ooxml-lite"
+version = "5.4.1"
+
+# Apache PDFBox (PDF parsing, used by the Tika PDF module).
+[[platform.java21.dependency]]
+groupId = "org.apache.pdfbox"
+artifactId = "pdfbox"
+version = "3.0.5"
+
+[[platform.java21.dependency]]
+groupId = "org.apache.pdfbox"
+artifactId = "pdfbox-io"
+version = "3.0.5"
+
+[[platform.java21.dependency]]
+groupId = "org.apache.pdfbox"
+artifactId = "fontbox"
+version = "3.0.5"
+
+[[platform.java21.dependency]]
+groupId = "org.apache.pdfbox"
+artifactId = "jempbox"
+version = "1.8.17"
+
+# Commons IO, required by Tika/PDFBox.
+[[platform.java21.dependency]]
+groupId = "commons-io"
+artifactId = "commons-io"
+version = "2.20.0"
+
+# Commons Compress, declared explicitly because OOXML parsing needs it: Tika's OOXMLParser
+# runs a zip-container detection pass that probes archive formats through this library.
+#
+# Pinned to 1.27.1 rather than the 1.28.0 used by `ballerina/ai`. From 1.28.0, commons-compress
+# calls `SystemProperties.getUserName(String)`, which only exists in commons-lang3 >= 3.17.0,
+# while the Ballerina runtime (ballerina-rt) bundles a shaded commons-lang3 3.14.0 that wins on
+# the classpath. With 1.28.0, .pptx extraction fails at runtime with a NoSuchMethodError;
+# declaring a newer commons-lang3 here does not help, because the runtime's copy takes
+# precedence. 1.27.1 does not use that overload and works against the bundled 3.14.0.
+[[platform.java21.dependency]]
+groupId = "org.apache.commons"
+artifactId = "commons-compress"
+version = "1.27.1"
+
+# Remaining POI transitive requirements (collections, logging, XMLBeans, bitset).
+[[platform.java21.dependency]]
+groupId = "org.apache.commons"
+artifactId = "commons-collections4"
+version = "4.4"
+
+[[platform.java21.dependency]]
+groupId = "org.apache.logging.log4j"
+artifactId = "log4j-api"
+version = "2.25.4"
+
+
+[[platform.java21.dependency]]
+groupId = "org.apache.xmlbeans"
+artifactId = "xmlbeans"
+version = "5.3.0"
+
+[[platform.java21.dependency]]
+groupId = "com.zaxxer"
+artifactId = "SparseBitSet"
+version = "1.3"

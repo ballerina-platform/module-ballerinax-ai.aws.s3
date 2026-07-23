@@ -1,0 +1,54 @@
+/*
+ * Copyright (c) 2026, WSO2 LLC. (http://www.wso2.com).
+ *
+ * WSO2 LLC. licenses this file to you under the Apache License,
+ * Version 2.0 (the "License"); you may not use this file except
+ * in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *    http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+plugins {
+    id 'java'
+}
+
+description = 'AWS S3 data loader - Java native utils'
+
+dependencies {
+    // Provided by the Ballerina runtime at execution time.
+    implementation group: 'org.ballerinalang', name: 'ballerina-runtime', version: "${ballerinaLangVersion}"
+
+    // Apache Tika: PDF text extraction only. Compiled against here; the same jars are declared
+    // as platform dependencies in Ballerina.toml. Parser dispatch is explicit (PDFParser);
+    // AutoDetectParser is never used.
+    implementation group: 'org.apache.tika', name: 'tika-core', version: "${tikaVersion}", {
+        exclude group: 'xml-apis', module: 'xml-apis'
+        exclude group: 'xerces', module: 'xercesImpl'
+    }
+    implementation group: 'org.apache.tika', name: 'tika-parser-pdf-module', version: "${tikaVersion}", {
+        exclude group: 'xml-apis', module: 'xml-apis'
+        exclude group: 'xerces', module: 'xercesImpl'
+        exclude group: 'org.bouncycastle', module: 'bcmail-jdk18on'
+        exclude group: 'org.bouncycastle', module: 'bcprov-jdk18on'
+        exclude group: 'org.bouncycastle', module: 'bcutil-jdk18on'
+        exclude group: 'org.bouncycastle', module: 'bcpkix-jdk18on'
+    }
+
+    // Apache POI: OOXML (.docx/.pptx) text extraction. Tika's OOXMLParser is deliberately not
+    // used — it runs a zip-container detection pass through commons-compress that breaks
+    // against the commons-lang3 bundled in the Ballerina runtime (see TextExtractor.java).
+    implementation group: 'org.apache.poi', name: 'poi', version: "${poiVersion}"
+    implementation group: 'org.apache.poi', name: 'poi-ooxml', version: "${poiVersion}"
+}
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_21
+    targetCompatibility = JavaVersion.VERSION_21
+}
