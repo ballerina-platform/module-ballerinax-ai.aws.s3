@@ -17,13 +17,14 @@
 import ballerina/ai;
 import ballerina/io;
 import ballerina/log;
+import ballerinax/aws.s3;
 
 // S3's ListObjectsV2 caps a single page at 1000 keys; the loader always requests the
 // maximum so a full page is a reliable "possibly truncated" signal.
 const int MAX_KEYS_PER_PAGE = 1000;
 
 # A data loader that reads objects from AWS S3 buckets as text for a RAG ingestion
-# pipeline. It implements `ai:DataLoader`, so its `load()` output feeds directly into
+# pipeline. It implements `ai:DataLoader`, so what it loads feeds directly into
 # `ai:KnowledgeBase.ingest`.
 #
 # Natively-textual objects (`md`, `html`, `htm`, `txt`, `csv`, `json`, `xml`, `yaml`, …)
@@ -35,19 +36,19 @@ const int MAX_KEYS_PER_PAGE = 1000;
 public isolated class TextDataLoader {
     *ai:DataLoader;
 
-    private final S3Api s3api;
+    private final s3:Client s3Client;
     private final readonly & Source[] sources;
     private final int maxDocuments;
     private final int maxObjectSize;
 
     # Initializes the AWS S3 data loader.
     #
-    # + s3 - Either a `ConnectionConfig` (the common case — the loader builds an S3 client
-    #        from it) or a ready `S3Api` implementation (an advanced/testing seam)
+    # + s3 - Either an `s3:ConnectionConfig` describing how to reach S3 (the loader builds the
+    #        client from it), or an already-configured `s3:Client` to reuse
     # + sources - One or more buckets, each with the targets (prefixes/keys) to load
     # + options - Loader-wide options: the document cap and the in-memory size ceiling
     # + return - An `ai:Error` if the configuration is invalid or the client cannot be built
-    public isolated function init(@display {label: "Connection Config"} ConnectionConfig|S3Api s3,
+    public isolated function init(@display {label: "Connection Config"} s3:ConnectionConfig|s3:Client s3,
             @display {label: "Data Sources"} Source[] sources,
             @display {label: "Loader Options"} LoaderOptions options = {}) returns ai:Error? {
         if sources.length() == 0 {
@@ -59,7 +60,7 @@ public isolated class TextDataLoader {
         if options.maxObjectSize < 1 {
             return error ai:Error("maxObjectSize must be at least 1");
         }
-        self.s3api = s3 is S3Api ? s3 : check buildS3Api(s3);
+        self.s3Client = s3 is s3:Client ? s3 : check buildS3Client(s3);
         self.sources = sources.cloneReadOnly();
         self.maxDocuments = options.maxDocuments;
         self.maxObjectSize = options.maxObjectSize;
@@ -107,7 +108,7 @@ public isolated class TextDataLoader {
     // Resolves an exact key by listing under it and looking for an identical key. Listing
     // (rather than a HEAD/GET probe) avoids downloading an object merely to test existence.
     private isolated function findExactKey(string bucket, string key) returns S3Item?|ai:Error {
-        S3Page page = check self.s3api.listPage(bucket, key, (), MAX_KEYS_PER_PAGE);
+        S3Page page = check listObjectPage(self.s3Client, bucket, key, (), MAX_KEYS_PER_PAGE);
         foreach S3Item item in page.items {
             if item.key == key {
                 return item;
@@ -122,8 +123,9 @@ public isolated class TextDataLoader {
         match classify(item.key, ()) {
             UNSUPPORTED_OFFICE => {
                 return error ai:Error(string `Unsupported file type for key '${item.key}' in bucket ` +
-                    string `'${bucket}': text extraction for legacy binary Microsoft Office documents ` +
-                    string `(.doc, .ppt, .xls, .xlsx) is not supported`);
+                    string `'${bucket}': text extraction for the Microsoft Office formats ` +
+                    string `(.doc, .ppt, .xls, .xlsx) is not supported. Convert the document to ` +
+                    string `.docx, .pptx or PDF.`);
             }
             UNSUPPORTED => {
                 return error ai:Error(
@@ -148,7 +150,7 @@ public isolated class TextDataLoader {
         string? marker = ();
         string? effectivePrefix = prefix == "" ? () : prefix;
         while true {
-            S3Page page = check self.s3api.listPage(bucket, effectivePrefix, marker, MAX_KEYS_PER_PAGE);
+            S3Page page = check listObjectPage(self.s3Client, bucket, effectivePrefix, marker, MAX_KEYS_PER_PAGE);
             foreach S3Item item in page.items {
                 if documents.length() >= budget {
                     return documents;
@@ -190,8 +192,8 @@ public isolated class TextDataLoader {
             returns ai:TextDocument?|ai:Error {
         match classify(item.key, ()) {
             UNSUPPORTED_OFFICE => {
-                log:printWarn("Skipping an unsupported legacy Office object: text extraction for " +
-                        ".doc/.ppt/.xls/.xlsx is not supported", bucket = bucket, key = item.key);
+                log:printWarn("Skipping an unsupported Microsoft Office object: text extraction " +
+                        "for .doc/.ppt/.xls/.xlsx is not supported", bucket = bucket, key = item.key);
                 return ();
             }
             UNSUPPORTED => {
@@ -205,7 +207,17 @@ public isolated class TextDataLoader {
     // Downloads an object's content (draining the stream with the size ceiling) and builds a
     // text document from it.
     private isolated function loadObject(string bucket, S3Item item) returns ai:TextDocument?|ai:Error {
-        stream<byte[], io:Error?> objStream = check self.s3api.getObjectStream(bucket, item.key);
+        // The listing already reported the size, so an over-sized object can be rejected before
+        // a byte is transferred — saving the download time and egress cost of a request that
+        // `drainStream` would abort anyway. The drain still enforces the ceiling, because the
+        // reported size is not guaranteed to be present or accurate.
+        int|error reportedSize = int:fromString(item.size);
+        if reportedSize is int && reportedSize > self.maxObjectSize {
+            return error ai:Error(string `Object '${item.key}' in bucket '${bucket}' is ` +
+                string `${reportedSize} bytes, which exceeds the configured maximum size of ` +
+                string `${self.maxObjectSize} bytes, and was not read into memory.`);
+        }
+        stream<byte[], io:Error?> objStream = check openObjectStream(self.s3Client, bucket, item.key);
         byte[] content = check drainStream(objStream, self.maxObjectSize, bucket, item.key);
         return buildDocument(content, bucket, item.key, item.size, item.lastModified, item.eTag);
     }

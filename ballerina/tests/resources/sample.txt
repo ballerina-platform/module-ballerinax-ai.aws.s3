@@ -1,0 +1,2 @@
+Ballerina S3 loader plain text fixture.
+Second line of the text file.

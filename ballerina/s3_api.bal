@@ -18,102 +18,106 @@ import ballerina/ai;
 import ballerina/io;
 import ballerinax/aws.s3;
 
-# Builds the production `S3Api` implementation from a `ConnectionConfig`, mapping this
-# package's auth union onto the underlying `ballerinax/aws.s3` client configuration.
-isolated function buildS3Api(ConnectionConfig config) returns S3Api|ai:Error {
-    s3:ConnectionConfig s3Config;
-    Credentials auth = config.auth;
-    if auth is StaticCredentials {
-        // Static (or STS) credentials: pass the key pair and optional session token
-        // through, selecting the connector's static-auth mode.
-        s3Config = {
-            accessKeyId: auth.accessKeyId,
-            secretAccessKey: auth.secretAccessKey,
-            region: config.region,
-            authType: s3:AWS_STATIC_AUTH
-        };
-        string? sessionToken = auth?.sessionToken;
-        if sessionToken is string {
-            s3Config.sessionToken = sessionToken;
-        }
-    } else {
-        // IAM-role mode: the connector fetches credentials from the EC2/ECS instance
-        // metadata service, so no key pair is supplied.
-        s3Config = {region: config.region, authType: s3:EC2_IAM_ROLE};
-    }
+// Everything that touches `ballerinax/aws.s3` lives here, so the loader deals in normalized
+// values and the connector's quirks are absorbed in one place.
 
-    s3:Client|error s3Client = new (s3Config);
+// A normalized S3 listing entry — the subset of an object's metadata the loader uses. The
+// connector reports every `s3:S3Object` field as an optional string, so these are normalized
+// once here rather than being null-checked throughout the loader. They are parsed leniently
+// when document metadata is built: an absent or unparseable value is omitted from `ai:Metadata`
+// rather than defaulted, so a malformed timestamp or size never fails a load.
+type S3Item record {|
+    // The full object key, including any '/' separators.
+    string key;
+    // The object size in bytes as reported by S3, as a decimal string; "" if absent.
+    string size = "";
+    // The object's entity tag, with S3's surrounding double quotes stripped; "" if absent.
+    string eTag = "";
+    // The last-modified timestamp as reported by S3 (ISO-8601); "" if absent.
+    string lastModified = "";
+|};
+
+// One page of an S3 object listing.
+type S3Page record {|
+    // The objects on this page, in ascending key order.
+    S3Item[] items;
+    // Whether more objects exist beyond this page.
+    boolean truncated;
+|};
+
+// Builds the S3 client the loader reads through, from the connector's own configuration.
+isolated function buildS3Client(s3:ConnectionConfig config) returns s3:Client|ai:Error {
+    s3:Client|error s3Client = new s3:Client(config);
     if s3Client is error {
         return error ai:Error("Failed to initialize the AWS S3 client: " + s3Client.message(), s3Client);
     }
-    return new ConnectorS3Api(s3Client);
+    return s3Client;
 }
 
-# The production `S3Api`, backed by a `ballerinax/aws.s3` client.
-#
-# Two connector limitations are absorbed here so the rest of the loader can ignore them
-# (see the package README's "Limitations"):
-#  1. `s3:Client.listObjects` never surfaces `IsTruncated`/`NextContinuationToken`, and
-#     its `start-after` query parameter is emitted without a separator so it corrupts the
-#     signed request. There is therefore no working way to fetch a second listing page.
-#     `listPage` serves the first page and, if asked for a later one (`startAfter != ()`),
-#     fails with a clear message rather than issuing a broken request.
-#  2. `s3:Client.getObject` returns a byte *stream*, not bytes; it is exposed as-is and
-#     drained (with a size ceiling) by the caller.
-isolated class ConnectorS3Api {
-    *S3Api;
-
-    private final s3:Client s3Client;
-
-    isolated function init(s3:Client s3Client) {
-        self.s3Client = s3Client;
+// Lists one page of objects under a prefix, normalizing the connector's result.
+//
+// Two connector limitations are absorbed here (see the package README's "Limitations"):
+//  1. `listObjects` never surfaces `IsTruncated`/`NextContinuationToken`, and its `start-after`
+//     query parameter is emitted without a separator so it corrupts the signed request. There is
+//     therefore no working way to fetch a second listing page: this serves the first page and,
+//     if asked for a later one (`startAfter != ()`), fails with a clear message rather than
+//     issuing a broken request.
+//  2. Every `s3:S3Object` field is an optional string, so keys are validated and sizes,
+//     timestamps and ETags are normalized here rather than in the loader.
+isolated function listObjectPage(s3:Client s3Client, string bucket, string? prefix, string? startAfter,
+        int maxKeys) returns S3Page|ai:Error {
+    if startAfter is string {
+        return error ai:Error(string `Listing for bucket '${bucket}'` +
+            (prefix is string ? string ` prefix '${prefix}'` : "") +
+            string ` exceeds a single page and cannot be fully read: ballerinax/aws.s3 ` +
+            string `does not surface continuation tokens and its 'start-after' paging is ` +
+            string `broken. Narrow the prefix or lower 'maxDocuments' so the result fits ` +
+            string `one page (up to ${maxKeys} objects).`);
     }
-
-    public isolated function listPage(string bucket, string? prefix, string? startAfter, int maxKeys)
-            returns S3Page|ai:Error {
-        if startAfter is string {
-            // A second page was requested, which this connector cannot fetch (see the
-            // class doc). Report it as a clear truncation error naming what to do.
-            return error ai:Error(string `Listing for bucket '${bucket}'` +
-                (prefix is string ? string ` prefix '${prefix}'` : "") +
-                string ` exceeds a single page and cannot be fully read: ballerinax/aws.s3 ` +
-                string `does not surface continuation tokens and its 'start-after' paging is ` +
-                string `broken. Narrow the prefix or lower 'maxDocuments' so the result fits ` +
-                string `one page (up to ${maxKeys} objects).`);
-        }
-        s3:S3Object[]|error listing = self.s3Client->listObjects(bucket, maxKeys = maxKeys, prefix = prefix);
-        if listing is error {
-            return error ai:Error(
-                string `Failed to list objects in bucket '${bucket}'` +
-                (prefix is string ? string ` under prefix '${prefix}'` : "") +
-                string `: ${listing.message()}`, listing);
-        }
-        S3Item[] items = [];
-        foreach s3:S3Object obj in listing {
-            string? key = obj?.objectName;
-            if key is () || key == "" {
-                continue;
-            }
-            items.push({
-                key,
-                size: obj?.objectSize ?: "",
-                eTag: obj?.eTag ?: "",
-                lastModified: obj?.lastModified ?: ""
-            });
-        }
-        // The connector cannot tell us whether the listing was truncated, so a full page
-        // (exactly `maxKeys` objects) is treated as "possibly truncated". The caller then
-        // attempts the next page, which surfaces the clear error above.
-        return {items, truncated: items.length() == maxKeys};
+    s3:S3Object[]|error listing = s3Client->listObjects(bucket, maxKeys = maxKeys, prefix = prefix);
+    if listing is error {
+        return error ai:Error(
+            string `Failed to list objects in bucket '${bucket}'` +
+            (prefix is string ? string ` under prefix '${prefix}'` : "") +
+            string `: ${listing.message()}`, listing);
     }
-
-    public isolated function getObjectStream(string bucket, string key)
-            returns stream<byte[], io:Error?>|ai:Error {
-        stream<byte[], io:Error?>|error objStream = self.s3Client->getObject(bucket, key);
-        if objStream is error {
-            return error ai:Error(
-                string `Failed to open object '${key}' in bucket '${bucket}': ${objStream.message()}`, objStream);
+    S3Item[] items = [];
+    foreach s3:S3Object obj in listing {
+        string? key = obj?.objectName;
+        if key is () || key == "" {
+            continue;
         }
-        return objStream;
+        items.push({
+            key,
+            size: obj?.objectSize ?: "",
+            // S3 returns the ETag wrapped in literal double quotes (it is an HTTP entity-tag).
+            // Strip them so the metadata value compares against the bare hex digest callers have.
+            eTag: unquote(obj?.eTag ?: ""),
+            lastModified: obj?.lastModified ?: ""
+        });
     }
+    // The connector cannot tell us whether the listing was truncated, so a full page is treated
+    // as "possibly truncated". Deliberately measured against the raw listing length rather than
+    // `items`: an entry skipped above for having no key would otherwise make a full page look
+    // short, and the caller would stop early and silently return a partial result.
+    return {items, truncated: listing.length() >= maxKeys};
+}
+
+// Opens a byte stream over an object's content. The caller drains and closes the stream.
+isolated function openObjectStream(s3:Client s3Client, string bucket, string key)
+        returns stream<byte[], io:Error?>|ai:Error {
+    stream<byte[], io:Error?>|error objStream = s3Client->getObject(bucket, key);
+    if objStream is error {
+        return error ai:Error(
+            string `Failed to open object '${key}' in bucket '${bucket}': ${objStream.message()}`, objStream);
+    }
+    return objStream;
+}
+
+// Strips a single pair of surrounding double quotes, as S3 wraps ETag values in them.
+isolated function unquote(string value) returns string {
+    if value.length() >= 2 && value.startsWith("\"") && value.endsWith("\"") {
+        return value.substring(1, value.length() - 1);
+    }
+    return value;
 }

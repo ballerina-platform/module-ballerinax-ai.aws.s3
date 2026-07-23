@@ -19,38 +19,33 @@ import ballerina/io;
 import ballerina/jballerina.java;
 import ballerina/time;
 
-# How an object's content is turned into text, derived from its key/MIME type. Matches
-# the file types supported by `ballerina/ai`'s built-in `TextDataLoader` exactly:
-# `md`/`html`/`htm` and other natively-textual types are decoded directly; `pdf` and the
-# OOXML formats `docx`/`pptx` are extracted via Apache Tika; legacy binary Office formats
-# are recognised only so they can be rejected or skipped.
+// How an object's content is turned into text, derived from its key/MIME type. Matches the
+// file types supported by `ballerina/ai`'s built-in `TextDataLoader` exactly: `md`/`html`/`htm`
+// and other natively-textual types are decoded directly; `pdf` is extracted with Tika and
+// `docx`/`pptx` with POI; the remaining Office formats are recognised only so they can be
+// rejected or skipped.
 enum DocumentKind {
     // Inherently textual (md/html/htm/txt/csv/json/xml/yaml/…); decoded from its bytes.
     PLAIN_TEXT,
     // A PDF document; text extracted via Tika's PDFParser.
     PDF,
-    // An OOXML document (.docx/.pptx); text extracted via Tika's OOXMLParser.
-    OOXML,
-    // A legacy binary Office document (.doc/.ppt/.xls/.xlsx). Like `ballerina/ai`, this
-    // loader does not support these: they are skipped in prefix walks and rejected with
-    // a format-specific error when named explicitly.
+    // A Word document (.docx); text extracted via POI's XWPFWordExtractor.
+    DOCX,
+    // A PowerPoint presentation (.pptx); text extracted via POI's SlideShowExtractor.
+    PPTX,
+    // An unsupported Microsoft Office format: the legacy binary ones (.doc/.ppt/.xls) and
+    // spreadsheets (.xlsx). Like `ballerina/ai`, this loader does not support these: they are
+    // skipped in prefix walks and rejected with a format-specific error when named explicitly.
     UNSUPPORTED_OFFICE,
     // Cannot be represented as text (images, audio, unknown binary); skipped.
     UNSUPPORTED
 }
 
-# Builds an `ai:TextDocument` from an object's downloaded bytes, decoding natively-textual
-# content directly and extracting `pdf`/`docx`/`pptx` via Apache Tika. Returns `()` when the
-# object cannot be represented as text (legacy Office, images, unknown binary), signalling
-# the caller to skip or reject it.
-#
-# + content - The object's raw bytes (already drained from the S3 stream)
-# + bucket - The source bucket, recorded in metadata
-# + key - The object key, used for classification and recorded in metadata
-# + size - The object size as reported by S3 (a decimal string; parsed leniently)
-# + lastModified - The last-modified timestamp reported by S3 (ISO-8601; parsed leniently)
-# + eTag - The object's ETag, recorded in metadata
-# + return - The text document, `()` if the object is not text, or an `ai:Error` on failure
+// Builds an `ai:TextDocument` from an object's downloaded bytes: natively-textual content is
+// decoded directly, `pdf` is extracted with Tika, and `docx`/`pptx` with POI. Returns `()` when
+// the object cannot be represented as text (unsupported Office, images, unknown binary),
+// signalling the caller to skip or reject it. `size` and `lastModified` are the raw strings S3
+// reported and are parsed leniently — a malformed value is omitted rather than failing the load.
 isolated function buildDocument(byte[] content, string bucket, string key, string size,
         string lastModified, string eTag) returns ai:TextDocument?|ai:Error {
     ai:Metadata metadata = {fileName: key};
@@ -94,8 +89,16 @@ isolated function buildDocument(byte[] content, string bucket, string key, strin
             }
             return {content: text, metadata};
         }
-        OOXML => {
-            string|error text = extractOoxmlText(content, key);
+        DOCX => {
+            string|error text = extractDocxText(content, key);
+            if text is error {
+                return error ai:Error(
+                    string `Failed to extract text from '${key}' in bucket '${bucket}': ${text.message()}`, text);
+            }
+            return {content: text, metadata};
+        }
+        PPTX => {
+            string|error text = extractPptxText(content, key);
             if text is error {
                 return error ai:Error(
                     string `Failed to extract text from '${key}' in bucket '${bucket}': ${text.message()}`, text);
@@ -106,27 +109,36 @@ isolated function buildDocument(byte[] content, string bucket, string key, strin
     return ();
 }
 
-# Extracts plain text from a PDF document using Apache Tika's `PDFParser`, reading directly
-# from the in-memory bytes (no temporary file). `fileName` is passed as a Tika resource-name
-# hint. Dispatch is explicit — `AutoDetectParser` is never used — so Tika's container
-# detection (and its version-sensitive `commons-compress` probing) never runs.
+// Extracts plain text from a PDF document using Apache Tika's PDFParser, reading directly
+// from the in-memory bytes (no temporary file). `fileName` is passed as a Tika resource-name
+// hint. Dispatch is explicit — AutoDetectParser is never used — so Tika's container
+// detection (and its version-sensitive commons-compress probing) never runs.
 isolated function extractPdfText(byte[] content, string fileName) returns string|error = @java:Method {
     'class: "io.ballerina.lib.ai.aws.s3.TextExtractor",
     name: "extractPdfText"
 } external;
 
-# Extracts plain text from an OOXML document (`.docx`/`.pptx`) using Apache Tika's
-# `OOXMLParser`, reading directly from the in-memory bytes (no temporary file). `fileName`
-# is passed as a Tika resource-name hint. Dispatch is explicit — `AutoDetectParser` is never
-# used — so only the OOXML container path runs.
-isolated function extractOoxmlText(byte[] content, string fileName) returns string|error = @java:Method {
+// Extracts plain text from a Word document (.docx) using POI's XWPFWordExtractor, reading the
+// OPC package straight from the in-memory bytes (no temporary file). Tika is bypassed for
+// OOXML on purpose: its OOXMLParser runs a zip-container detection pass that probes archive
+// formats through commons-compress, which both defeats the point of explicit dispatch and
+// breaks against the commons-lang3 the Ballerina runtime bundles (see TextExtractor.java).
+isolated function extractDocxText(byte[] content, string fileName) returns string|error = @java:Method {
     'class: "io.ballerina.lib.ai.aws.s3.TextExtractor",
-    name: "extractOoxmlText"
+    name: "extractDocxText"
 } external;
 
-# Classifies an object by how its text is obtained, using MIME type (when known) then the
-# key extension. S3 object listings carry no Content-Type, so in practice classification is
-# by extension; the `mimeType` parameter is honoured when a caller has one.
+// Extracts plain text from a PowerPoint presentation (.pptx) using POI's SlideShowExtractor,
+// reading straight from the in-memory bytes (no temporary file). See `extractDocxText` for why
+// Tika's OOXMLParser is not used.
+isolated function extractPptxText(byte[] content, string fileName) returns string|error = @java:Method {
+    'class: "io.ballerina.lib.ai.aws.s3.TextExtractor",
+    name: "extractPptxText"
+} external;
+
+// Classifies an object by how its text is obtained, using MIME type (when known) then the
+// key extension. S3 object listings carry no Content-Type, so in practice classification is
+// by extension; the `mimeType` parameter is honoured when a caller has one.
 isolated function classify(string fileName, string? mimeType) returns DocumentKind {
     string mime = (mimeType ?: "").toLowerAscii();
     string extension = getExtension(fileName);
@@ -137,34 +149,26 @@ isolated function classify(string fileName, string? mimeType) returns DocumentKi
     if mime == "application/pdf" || extension == "pdf" {
         return PDF;
     }
-    if (mime != "" && OOXML_MIME_TYPES.indexOf(mime) !is ()) || OOXML_EXTENSIONS.indexOf(extension) !is () {
-        return OOXML;
+    if mime == DOCX_MIME_TYPE || extension == "docx" {
+        return DOCX;
     }
-    // Legacy binary Office formats are recognised solely so they can be rejected with a
-    // clear message (named keys) or skipped (prefix walks) — this loader, like
-    // `ballerina/ai`, extracts text from PDF and OOXML only.
-    if (mime != "" && LEGACY_OFFICE_MIME_TYPES.indexOf(mime) !is ())
-            || LEGACY_OFFICE_EXTENSIONS.indexOf(extension) !is () {
+    if mime == PPTX_MIME_TYPE || extension == "pptx" {
+        return PPTX;
+    }
+    // The remaining Office formats are recognised solely so they can be rejected with a clear
+    // message (named keys) or skipped (prefix walks) — this loader, like `ballerina/ai`,
+    // extracts text from PDF, .docx and .pptx only.
+    if (mime != "" && UNSUPPORTED_OFFICE_MIME_TYPES.indexOf(mime) !is ())
+            || UNSUPPORTED_OFFICE_EXTENSIONS.indexOf(extension) !is () {
         return UNSUPPORTED_OFFICE;
     }
     return UNSUPPORTED;
 }
 
-# Reports whether a key names a legacy binary Office document (.doc/.ppt/.xls/.xlsx), which
-# this loader does not support.
-isolated function isUnsupportedOfficeDocument(string fileName) returns boolean =>
-    classify(fileName, ()) == UNSUPPORTED_OFFICE;
-
-# Drains a byte stream fully into memory, enforcing a size ceiling, and closes the stream on
-# every exit path (normal completion, ceiling exceeded, or a mid-read error) so no stream is
-# ever leaked. An object exceeding `maxBytes` fails with a clear `ai:Error` rather than
-# risking an out-of-memory condition.
-#
-# + objStream - The stream to drain (consumed and closed by this function)
-# + maxBytes - The maximum total size permitted, in bytes
-# + bucket - The source bucket, for error messages
-# + key - The object key, for error messages
-# + return - The object's bytes, or an `ai:Error` if a read fails or the ceiling is exceeded
+// Drains a byte stream fully into memory, enforcing a size ceiling, and closes the stream on
+// every exit path (normal completion, ceiling exceeded, or a mid-read error) so no stream is
+// ever leaked. An object exceeding `maxBytes` fails with a clear `ai:Error` rather than risking
+// an out-of-memory condition; the over-limit chunk is never appended, so the bound is exact.
 isolated function drainStream(stream<byte[], io:Error?> objStream, int maxBytes, string bucket, string key)
         returns byte[]|ai:Error {
     byte[] content = [];
@@ -196,8 +200,8 @@ isolated function drainStream(stream<byte[], io:Error?> objStream, int maxBytes,
     return content;
 }
 
-# Closes a stream, ignoring any close error. Used on error paths where the original error
-# is the one worth surfacing.
+// Closes a stream, ignoring any close error. Used on error paths where the original error
+// is the one worth surfacing.
 isolated function closeQuietly(stream<byte[], io:Error?> objStream) {
     io:Error? closeResult = objStream.close();
     if closeResult is io:Error {
@@ -205,7 +209,7 @@ isolated function closeQuietly(stream<byte[], io:Error?> objStream) {
     }
 }
 
-# Returns the lower-cased key extension (without the dot), or `""` if none.
+// Returns the lower-cased key extension (without the dot), or "" if none.
 isolated function getExtension(string fileName) returns string {
     int? lastDotIndex = fileName.lastIndexOf(".");
     if lastDotIndex is () {
@@ -214,8 +218,8 @@ isolated function getExtension(string fileName) returns string {
     return fileName.substring(lastDotIndex + 1).toLowerAscii();
 }
 
-# Reports whether a key passes the extension allowlist (`()`/empty matches all). A leading
-# dot on an allowed entry is optional and matching is case-insensitive.
+// Reports whether a key passes the extension allowlist (()/empty matches all). A leading
+// dot on an allowed entry is optional and matching is case-insensitive.
 isolated function matchesExtensionFilter(string fileName, string[]? includeExtensions) returns boolean {
     if includeExtensions is () || includeExtensions.length() == 0 {
         return true;
@@ -233,7 +237,7 @@ isolated function matchesExtensionFilter(string fileName, string[]? includeExten
     return false;
 }
 
-# Parses an ISO 8601 timestamp into `time:Utc`, or `()` if absent/blank/unparseable.
+// Parses an ISO 8601 timestamp into time:Utc, or () if absent/blank/unparseable.
 isolated function toUtc(string dateTime) returns time:Utc? {
     if dateTime.trim() == "" {
         return ();
@@ -242,12 +246,13 @@ isolated function toUtc(string dateTime) returns time:Utc? {
     return utc is time:Utc ? utc : ();
 }
 
-# Maps a key extension to a clean, parameter-free MIME type, or `()` when unknown. The
-# `text/markdown` and `text/html` values are set precisely so `ai`'s `guessChunker` routes
-# markup to its Markdown/HTML chunkers.
+// Maps a key extension to a clean, parameter-free MIME type, or () when unknown. The
+// text/markdown and text/html values are set precisely so `ai`'s `guessChunker` routes
+// markup to its Markdown/HTML chunkers.
 isolated function mimeTypeForExtension(string extension) returns string? => MIME_TYPES_BY_EXTENSION[extension];
 
-# MIME types (outside the `text/` family) treated as natively textual.
+// MIME types (outside the `text/` family) treated as natively textual. Consulted only when a
+// caller supplies a MIME type; S3 listings carry none, so in practice extensions decide.
 final readonly & string[] TEXT_MIME_TYPES = [
     "application/json",
     "application/xml",
@@ -258,33 +263,33 @@ final readonly & string[] TEXT_MIME_TYPES = [
     "application/csv"
 ];
 
-# Key extensions treated as natively textual (decoded directly, matching `ai`'s handling of
-# `md`/`html`/`htm` and the natively-textual types S3 buckets hold constantly).
+// Key extensions treated as natively textual (decoded directly, matching `ai`'s handling of
+// md/html/htm plus the natively-textual types S3 buckets hold constantly).
 final readonly & string[] TEXT_EXTENSIONS = [
     "txt", "text", "md", "markdown", "csv", "tsv", "json", "xml", "html", "htm",
     "yaml", "yml", "log", "ini", "conf", "properties", "css", "js", "ts"
 ];
 
-# OOXML MIME types whose text is extracted via Tika's OOXMLParser.
-final readonly & string[] OOXML_MIME_TYPES = [
-    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-    "application/vnd.openxmlformats-officedocument.presentationml.presentation"
-];
+// The Word (.docx) OOXML media type; extracted via POI's XWPFWordExtractor.
+const string DOCX_MIME_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
 
-# OOXML key extensions whose text is extracted via Tika's OOXMLParser.
-final readonly & string[] OOXML_EXTENSIONS = ["docx", "pptx"];
+// The PowerPoint (.pptx) OOXML media type; extracted via POI's SlideShowExtractor.
+const string PPTX_MIME_TYPE = "application/vnd.openxmlformats-officedocument.presentationml.presentation";
 
-# Legacy binary Office MIME types, recognised only to reject/skip (unsupported, matching `ai`).
-final readonly & string[] LEGACY_OFFICE_MIME_TYPES = [
+// Unsupported Microsoft Office MIME types, recognised only to reject/skip (matching `ai`).
+// Kept in step with UNSUPPORTED_OFFICE_EXTENSIONS: the spreadsheet entry covers .xlsx, which is
+// OOXML rather than a legacy binary format but is equally unsupported.
+final readonly & string[] UNSUPPORTED_OFFICE_MIME_TYPES = [
     "application/msword",
     "application/vnd.ms-powerpoint",
-    "application/vnd.ms-excel"
+    "application/vnd.ms-excel",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 ];
 
-# Legacy binary Office key extensions, recognised only to reject/skip (unsupported).
-final readonly & string[] LEGACY_OFFICE_EXTENSIONS = ["doc", "ppt", "xls", "xlsx"];
+// Unsupported Microsoft Office key extensions: the legacy binary formats plus .xlsx.
+final readonly & string[] UNSUPPORTED_OFFICE_EXTENSIONS = ["doc", "ppt", "xls", "xlsx"];
 
-# Extension-to-MIME-type table used for document metadata and chunker routing.
+// Extension-to-MIME-type table used for document metadata and chunker routing.
 final readonly & map<string> MIME_TYPES_BY_EXTENSION = {
     "md": "text/markdown",
     "markdown": "text/markdown",
@@ -306,6 +311,6 @@ final readonly & map<string> MIME_TYPES_BY_EXTENSION = {
     "js": "text/javascript",
     "ts": "application/typescript",
     "pdf": "application/pdf",
-    "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-    "pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+    "docx": DOCX_MIME_TYPE,
+    "pptx": PPTX_MIME_TYPE
 };
