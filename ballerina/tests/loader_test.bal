@@ -25,7 +25,7 @@ import ballerinax/aws.s3;
 
 // A syntactically valid configuration; no request is issued when a client is built.
 isolated function testConnection() returns s3:ConnectionConfig =>
-    {accessKeyId: "AKIAEXAMPLE", secretAccessKey: "secret", region: "us-east-1"};
+    {auth: {accessKeyId: "AKIAEXAMPLE", secretAccessKey: "secret"}, region: "us-east-1"};
 
 @test:Config {}
 isolated function testInitRejectsEmptySources() {
@@ -64,9 +64,11 @@ isolated function testInitSucceedsWithValidConfiguration() {
 @test:Config {}
 isolated function testInitAcceptsTemporaryCredentials() {
     TextDataLoader|ai:Error loader = new ({
-                accessKeyId: "ASIAEXAMPLE",
-                secretAccessKey: "secret",
-                sessionToken: "session-token-value",
+                auth: {
+                    accessKeyId: "ASIAEXAMPLE",
+                    secretAccessKey: "secret",
+                    sessionToken: "session-token-value"
+                },
                 region: "eu-west-2"
             }, [{bucket: TEST_BUCKET}]);
     test:assertFalse(loader is ai:Error, "Temporary STS credentials must be accepted");
@@ -82,14 +84,15 @@ isolated function testInitAcceptsAPrebuiltClient() returns error? {
 }
 
 @test:Config {}
-isolated function testInitAcceptsIamRoleConfigShape() {
-    // IAM-role auth is selected through the connector's own `authType`. Off AWS the instance
-    // metadata lookup cannot succeed, so this must surface as a clean ai:Error, never a panic.
+isolated function testInitAcceptsDefaultCredentialsConfigShape() {
+    // The default AWS credential chain (env vars, ECS/EC2 instance profiles, ...) is selected
+    // with `s3:DEFAULT_CREDENTIALS`. Where the chain cannot resolve credentials this must surface
+    // as a clean ai:Error, never a panic.
     TextDataLoader|ai:Error loader =
-        new ({authType: s3:EC2_IAM_ROLE, region: "us-east-1"}, [{bucket: TEST_BUCKET}]);
+        new ({auth: s3:DEFAULT_CREDENTIALS, region: "us-east-1"}, [{bucket: TEST_BUCKET}]);
     if loader is ai:Error {
         test:assertTrue(loader.message().startsWith("Failed to initialize the AWS S3 client:"),
-                "An IAM-role failure must be wrapped, got: " + loader.message());
+                "A credential-chain failure must be wrapped, got: " + loader.message());
     }
 }
 

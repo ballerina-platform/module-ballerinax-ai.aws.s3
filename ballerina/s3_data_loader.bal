@@ -15,7 +15,6 @@
 // under the License.
 
 import ballerina/ai;
-import ballerina/io;
 import ballerina/log;
 import ballerinax/aws.s3;
 
@@ -174,8 +173,8 @@ public isolated class TextDataLoader {
             }
             string nextMarker = page.items[page.items.length() - 1].key;
             if nextMarker == marker {
-                // GUARD: the marker did not advance, so paging cannot make progress. The
-                // listing is genuinely truncated and unreadable with this connector.
+                // GUARD: a truncated page whose last key equals the current marker cannot
+                // advance paging, so bail rather than loop forever. Not expected in practice.
                 return error ai:Error(string `Listing for bucket '${bucket}'` +
                     (prefix == "" ? "" : string ` under prefix '${prefix}'`) +
                     string ` is truncated and cannot be fully read. Narrow the prefix or lower ` +
@@ -217,7 +216,7 @@ public isolated class TextDataLoader {
                 string `${reportedSize} bytes, which exceeds the configured maximum size of ` +
                 string `${self.maxObjectSize} bytes, and was not read into memory.`);
         }
-        stream<byte[], io:Error?> objStream = check openObjectStream(self.s3Client, bucket, item.key);
+        stream<byte[], error?> objStream = check openObjectStream(self.s3Client, bucket, item.key);
         byte[] content = check drainStream(objStream, self.maxObjectSize, bucket, item.key);
         return buildDocument(content, bucket, item.key, item.size, item.lastModified, item.eTag);
     }

@@ -15,17 +15,17 @@
 // under the License.
 
 import ballerina/ai;
-import ballerina/io;
 import ballerinax/aws.s3;
 
 // Everything that touches `ballerinax/aws.s3` lives here, so the loader deals in normalized
 // values and the connector's quirks are absorbed in one place.
 
 // A normalized S3 listing entry — the subset of an object's metadata the loader uses. The
-// connector reports every `s3:S3Object` field as an optional string, so these are normalized
-// once here rather than being null-checked throughout the loader. They are parsed leniently
-// when document metadata is built: an absent or unparseable value is omitted from `ai:Metadata`
-// rather than defaulted, so a malformed timestamp or size never fails a load.
+// connector's `s3:S3Object` fields are normalized once here (the size is carried as a decimal
+// string so the loader's metadata mapping stays uniform) rather than being handled throughout
+// the loader. They are parsed leniently when document metadata is built: an absent or
+// unparseable value is omitted from `ai:Metadata` rather than defaulted, so a malformed
+// timestamp or size never fails a load.
 type S3Item record {|
     // The full object key, including any '/' separators.
     string key;
@@ -56,57 +56,53 @@ isolated function buildS3Client(s3:ConnectionConfig config) returns s3:Client|ai
 
 // Lists one page of objects under a prefix, normalizing the connector's result.
 //
-// Two connector limitations are absorbed here (see the package README's "Limitations"):
-//  1. `listObjects` never surfaces `IsTruncated`/`NextContinuationToken`, and its `start-after`
-//     query parameter is emitted without a separator so it corrupts the signed request. There is
-//     therefore no working way to fetch a second listing page: this serves the first page and,
-//     if asked for a later one (`startAfter != ()`), fails with a clear message rather than
-//     issuing a broken request.
-//  2. Every `s3:S3Object` field is an optional string, so keys are validated and sizes,
-//     timestamps and ETags are normalized here rather than in the loader.
+// `startAfter` is the key-marker for the next page: `()` requests the first page, and a key
+// requests the objects lexicographically after it. `ballerinax/aws.s3` 5.0.0 signs and paginates
+// through the AWS SDK, so `startAfter` and the returned `isTruncated` flag are both honoured —
+// the caller (`loadPrefix`) walks every page. `s3:S3Object` fields are normalized here (size to a
+// decimal string, ETag with S3's surrounding double quotes stripped) rather than in the loader.
 isolated function listObjectPage(s3:Client s3Client, string bucket, string? prefix, string? startAfter,
         int maxKeys) returns S3Page|ai:Error {
-    if startAfter is string {
-        return error ai:Error(string `Listing for bucket '${bucket}'` +
-            (prefix is string ? string ` prefix '${prefix}'` : "") +
-            string ` exceeds a single page and cannot be fully read: ballerinax/aws.s3 ` +
-            string `does not surface continuation tokens and its 'start-after' paging is ` +
-            string `broken. Narrow the prefix or lower 'maxDocuments' so the result fits ` +
-            string `one page (up to ${maxKeys} objects).`);
+    // `prefix` and `startAfter` are optional `s3:ListObjectsConfig` fields typed `string`, so an
+    // absent value is omitted (never passed as `()`) by selecting the matching call arm.
+    s3:ListObjectsResponse|s3:Error listing;
+    if prefix is string && startAfter is string {
+        listing = s3Client->listObjects(bucket, prefix = prefix, startAfter = startAfter, maxKeys = maxKeys);
+    } else if prefix is string {
+        listing = s3Client->listObjects(bucket, prefix = prefix, maxKeys = maxKeys);
+    } else if startAfter is string {
+        listing = s3Client->listObjects(bucket, startAfter = startAfter, maxKeys = maxKeys);
+    } else {
+        listing = s3Client->listObjects(bucket, maxKeys = maxKeys);
     }
-    s3:S3Object[]|error listing = s3Client->listObjects(bucket, maxKeys = maxKeys, prefix = prefix);
-    if listing is error {
+    if listing is s3:Error {
         return error ai:Error(
             string `Failed to list objects in bucket '${bucket}'` +
             (prefix is string ? string ` under prefix '${prefix}'` : "") +
             string `: ${listing.message()}`, listing);
     }
     S3Item[] items = [];
-    foreach s3:S3Object obj in listing {
-        string? key = obj?.objectName;
-        if key is () || key == "" {
+    foreach s3:S3Object obj in listing.objects {
+        string key = obj.key;
+        if key == "" {
             continue;
         }
         items.push({
             key,
-            size: obj?.objectSize ?: "",
+            size: obj.size.toString(),
             // S3 returns the ETag wrapped in literal double quotes (it is an HTTP entity-tag).
             // Strip them so the metadata value compares against the bare hex digest callers have.
-            eTag: unquote(obj?.eTag ?: ""),
-            lastModified: obj?.lastModified ?: ""
+            eTag: unquote(obj.eTag),
+            lastModified: obj.lastModified
         });
     }
-    // The connector cannot tell us whether the listing was truncated, so a full page is treated
-    // as "possibly truncated". Deliberately measured against the raw listing length rather than
-    // `items`: an entry skipped above for having no key would otherwise make a full page look
-    // short, and the caller would stop early and silently return a partial result.
-    return {items, truncated: listing.length() >= maxKeys};
+    return {items, truncated: listing.isTruncated};
 }
 
 // Opens a byte stream over an object's content. The caller drains and closes the stream.
 isolated function openObjectStream(s3:Client s3Client, string bucket, string key)
-        returns stream<byte[], io:Error?>|ai:Error {
-    stream<byte[], io:Error?>|error objStream = s3Client->getObject(bucket, key);
+        returns stream<byte[], error?>|ai:Error {
+    stream<byte[], error?>|error objStream = s3Client->getObjectAsStream(bucket, key);
     if objStream is error {
         return error ai:Error(
             string `Failed to open object '${key}' in bucket '${bucket}': ${objStream.message()}`, objStream);

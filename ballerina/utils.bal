@@ -15,7 +15,6 @@
 // under the License.
 
 import ballerina/ai;
-import ballerina/io;
 import ballerina/jballerina.java;
 import ballerina/time;
 
@@ -169,13 +168,13 @@ isolated function classify(string fileName, string? mimeType) returns DocumentKi
 // every exit path (normal completion, ceiling exceeded, or a mid-read error) so no stream is
 // ever leaked. An object exceeding `maxBytes` fails with a clear `ai:Error` rather than risking
 // an out-of-memory condition; the over-limit chunk is never appended, so the bound is exact.
-isolated function drainStream(stream<byte[], io:Error?> objStream, int maxBytes, string bucket, string key)
+isolated function drainStream(stream<byte[], error?> objStream, int maxBytes, string bucket, string key)
         returns byte[]|ai:Error {
     byte[] content = [];
     int total = 0;
     while true {
-        record {|byte[] value;|}|io:Error? next = objStream.next();
-        if next is io:Error {
+        record {|byte[] value;|}|error? next = objStream.next();
+        if next is error {
             closeQuietly(objStream);
             return error ai:Error(
                 string `Failed to read object '${key}' in bucket '${bucket}': ${next.message()}`, next);
@@ -191,8 +190,8 @@ isolated function drainStream(stream<byte[], io:Error?> objStream, int maxBytes,
         }
         content.push(...next.value);
     }
-    io:Error? closeResult = objStream.close();
-    if closeResult is io:Error {
+    error? closeResult = objStream.close();
+    if closeResult is error {
         return error ai:Error(
             string `Failed to close the stream for object '${key}' in bucket '${bucket}': ${closeResult.message()}`,
             closeResult);
@@ -202,9 +201,9 @@ isolated function drainStream(stream<byte[], io:Error?> objStream, int maxBytes,
 
 // Closes a stream, ignoring any close error. Used on error paths where the original error
 // is the one worth surfacing.
-isolated function closeQuietly(stream<byte[], io:Error?> objStream) {
-    io:Error? closeResult = objStream.close();
-    if closeResult is io:Error {
+isolated function closeQuietly(stream<byte[], error?> objStream) {
+    error? closeResult = objStream.close();
+    if closeResult is error {
         // Intentionally ignored: a close failure must not mask the read/ceiling error.
     }
 }
