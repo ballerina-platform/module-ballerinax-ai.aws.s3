@@ -23,6 +23,24 @@ import ballerina/test;
 // in hand. They are what stops a Tika, PDFBox or POI version bump from silently breaking text
 // extraction: a dependency change that broke a parser would fail here rather than quietly
 // yielding empty documents in production.
+//
+// The three binary fixtures are deliberately **multi-unit**: the PDF has two pages, the .docx two
+// paragraphs, and the .pptx two slides, with the two asserted phrases placed in *separate* units.
+// `assertOrderedPhrases` then checks both are present and that the first precedes the second, so an
+// extractor that dropped the trailing page/slide/paragraph, or concatenated units out of order,
+// fails here rather than passing on the first unit alone.
+
+// Asserts `first` and `second` both appear in `content`, with `first` strictly before `second`.
+isolated function assertOrderedPhrases(string content, string first, string second, string label) {
+    int? firstAt = content.indexOf(first);
+    int? secondAt = content.indexOf(second);
+    test:assertTrue(firstAt !is (), label + ": first unit missing; extracted: " + content);
+    test:assertTrue(secondAt !is (), label + ": second unit missing (dropped?); extracted: " + content);
+    if firstAt is int && secondAt is int {
+        test:assertTrue(firstAt < secondAt,
+                label + ": units extracted out of order; extracted: " + content);
+    }
+}
 
 // Runs a fixture through document construction exactly as the loader does after draining.
 isolated function buildFromFixture(string fixture, string key, string size = "1024",
@@ -45,10 +63,9 @@ isolated function contentOf(ai:Document doc) returns string {
 isolated function testExtractTextFromPdfFixture() returns error? {
     ai:TextDocument doc = check buildFromFixture("sample.pdf", "corpus/sample.pdf").ensureType();
     string content = contentOf(doc);
-    test:assertTrue(content.includes("Ballerina S3 loader PDF fixture"),
-            "PDF text extraction failed; extracted: " + content);
-    test:assertTrue(content.includes("Extracted from a real PDF document"),
-            "PDF text extraction dropped content; extracted: " + content);
+    // Page 1 phrase then page 2 phrase — proves both pages are concatenated, in order.
+    assertOrderedPhrases(content, "Ballerina S3 loader PDF fixture",
+            "Extracted from a real PDF document", "PDF");
     ai:Metadata metadata = check doc.metadata.ensureType();
     test:assertEquals(metadata.mimeType, "application/pdf");
     test:assertEquals(metadata["key"], "corpus/sample.pdf");
@@ -58,12 +75,10 @@ isolated function testExtractTextFromPdfFixture() returns error? {
 isolated function testExtractTextFromDocxFixture() returns error? {
     ai:TextDocument doc = check buildFromFixture("sample.docx", "corpus/sample.docx").ensureType();
     string content = contentOf(doc);
-    test:assertTrue(content.includes("Ballerina S3 loader DOCX fixture"),
-            "DOCX text extraction failed; extracted: " + content);
-    // Assert a second, later phrase too: a regression returning only the first run or paragraph
-    // would otherwise pass.
-    test:assertTrue(content.includes("Extracted from a real Word document"),
-            "DOCX text extraction dropped content; extracted: " + content);
+    // Paragraph 1 phrase then paragraph 2 phrase — the two now sit in separate <w:p> elements,
+    // so an extractor returning only the first paragraph would fail this.
+    assertOrderedPhrases(content, "Ballerina S3 loader DOCX fixture",
+            "Extracted from a real Word document", "DOCX");
     ai:Metadata metadata = check doc.metadata.ensureType();
     test:assertEquals(metadata.mimeType,
             "application/vnd.openxmlformats-officedocument.wordprocessingml.document");
@@ -73,10 +88,9 @@ isolated function testExtractTextFromDocxFixture() returns error? {
 isolated function testExtractTextFromPptxFixture() returns error? {
     ai:TextDocument doc = check buildFromFixture("sample.pptx", "corpus/sample.pptx").ensureType();
     string content = contentOf(doc);
-    test:assertTrue(content.includes("S3 Loader PPTX Fixture"),
-            "PPTX title extraction failed; extracted: " + content);
-    test:assertTrue(content.includes("Extracted from a real PowerPoint presentation"),
-            "PPTX body extraction failed; extracted: " + content);
+    // Slide 1 title then slide 2 body — proves both slides are concatenated, in order.
+    assertOrderedPhrases(content, "S3 Loader PPTX Fixture",
+            "Extracted from a real PowerPoint presentation", "PPTX");
     ai:Metadata metadata = check doc.metadata.ensureType();
     test:assertEquals(metadata.mimeType,
             "application/vnd.openxmlformats-officedocument.presentationml.presentation");

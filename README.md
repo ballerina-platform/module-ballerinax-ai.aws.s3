@@ -43,9 +43,11 @@ from S3 itself.
   connector discards `CommonPrefixes`. `recursive: false` therefore lists **every** key under the
   prefix and discards the nested ones — on a wide prefix this wastes listing bandwidth and counts
   against the one-page cap.
-- **Keys needing percent-encoding will fail** with `SignatureDoesNotMatch` — a key or prefix
-  containing a space, `+`, `&`, `=`, `#`, or non-ASCII characters. The connector signs an encoded
-  canonical URI but sends the raw one, and uses form encoding where SigV4 requires `%20`.
+- **Nested prefixes and keys fail on real S3** with `SignatureDoesNotMatch`. The connector's SigV4
+  signing mishandles `/` in query values, so any `path` containing a `/` (i.e. most nested prefixes
+  and keys) cannot be listed; only whole-bucket and single-segment top-level loads work. Keys with
+  spaces fail similarly. Detailed for the maintainers in
+  [docs/HANDOVER.md](docs/HANDOVER.md#connector-bugs--for-the-upstream-report).
 - **Legacy binary Office and spreadsheets are unsupported** (`.doc`, `.ppt`, `.xls`, `.xlsx`),
   matching `ballerina/ai`. Convert `.doc`/`.ppt` to `.docx`/`.pptx` or PDF; export spreadsheets to
   `.csv`. (`.xlsx` is excluded despite being OOXML — extracting meaningful text from a spreadsheet

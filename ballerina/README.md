@@ -266,11 +266,15 @@ from S3 itself.
   connector discards `CommonPrefixes` and `S3Object[]` cannot represent them. `recursive: false`
   therefore lists **every** key under the prefix and discards the nested ones. On a wide prefix
   this wastes listing bandwidth and counts against the one-page cap — prefer a narrower `path`.
-- **Keys needing percent-encoding will fail.** An object key or prefix containing a space, `+`,
-  `&`, `=`, `#`, or non-ASCII characters fails with `SignatureDoesNotMatch`. The connector signs
-  an encoded canonical URI but sends the raw one, and uses form encoding (a space becomes `+`)
-  where SigV4 requires `%20`. Such keys are routine in S3, so check yours before indexing; there
-  is no workaround short of an upstream fix or renaming the objects.
+- **Nested prefixes and keys fail on real S3 with `SignatureDoesNotMatch`.** The connector's SigV4
+  signing reverts `%2F` back to `/` in canonical query values (correct for the URL path, wrong for
+  a query value), so it signs `prefix=docs/2026/` while AWS canonicalizes `prefix=docs%2F2026%2F` —
+  the signatures never agree. Because the loader passes your `path` as the `prefix` query
+  parameter, **any prefix or key containing a `/` fails**: only whole-bucket loads (`path: ""`) and
+  single-segment top-level prefixes with no `/` work against real S3 today. Keys containing spaces
+  fail for a related reason (the connector form-encodes a space as `+` where SigV4 requires `%20`).
+  There is no workaround short of an upstream connector fix; both defects are detailed for the
+  maintainers in [docs/HANDOVER.md](../docs/HANDOVER.md#connector-bugs--for-the-upstream-report).
 - **An exact key is resolved by listing its prefix.** If more than 1000 keys share the exact key
   as a prefix and the key itself sorts beyond the first page, the lookup misses and silently
   falls back to a prefix walk. Rare, but it follows from the one-page cap above.
