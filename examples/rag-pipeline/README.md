@@ -103,12 +103,10 @@ Top 2 matching passage(s):
   `Target` field is `path` and also accepts an **exact object key**.
 - `includeExtensions` restricts the load to `.pdf`, `.md`, `.txt` and `.docx`, so unrelated
   objects under the prefix are not embedded. Anything unsupported found while walking the target
-  is skipped with a warning rather than failing the run. Note that this filter is applied *after*
-  listing, so it reduces what gets embedded but not what counts against the 1000-object listing
-  limit — narrow `prefix` for that.
-- `maxDocuments` is set to 100. Raising it past 1000 does not help: the listing itself caps at one
-  page, so a larger corpus must be split across narrower prefixes. See
-  [Limitations](../../ballerina/README.md#limitations).
+  is skipped with a warning rather than failing the run.
+- The loader reads and embeds the **whole** matching corpus, paginating across all listing pages.
+  There is no document cap, so a very large prefix produces a correspondingly large in-memory
+  result — narrow `prefix` if that is a concern.
 - **Chunks stay traceable to their object.** The loader records `bucket`, `key` and `eTag` as open
   metadata fields, and `ai`'s chunkers carry document metadata onto each chunk — which is why the
   output above can name the file each passage came from.

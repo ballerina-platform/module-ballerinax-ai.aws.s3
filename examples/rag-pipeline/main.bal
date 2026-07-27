@@ -17,11 +17,12 @@
 import ballerina/ai;
 import ballerina/io;
 import ballerinax/ai.aws.s3;
+import ballerinax/aws.s3 as awsS3;
 
 // Supplied via Config.toml — never hard-code credentials.
 configurable string accessKeyId = ?;
 configurable string secretAccessKey = ?;
-configurable string region = "us-east-1";
+configurable awsS3:Region region = awsS3:US_EAST_1;
 configurable string bucket = ?;
 configurable string prefix = "";
 
@@ -32,14 +33,13 @@ public function main() returns error? {
     // 1. Load the corpus out of S3. Only the document types the loader supports are read;
     //    anything else under the prefix is skipped with a warning.
     s3:TextDataLoader loader = check new (
-        {accessKeyId, secretAccessKey, region},
+        {auth: {accessKeyId, secretAccessKey}, region},
         [
             {
                 bucket,
                 targets: [{path: prefix, recursive: true, includeExtensions: [".pdf", ".md", ".txt", ".docx"]}]
             }
-        ],
-        {maxDocuments: 100}
+        ]
     );
 
     ai:Document[]|ai:Document documents = check loader.load();

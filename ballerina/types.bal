@@ -54,12 +54,6 @@ public type Source record {|
 
 # Loader-wide options bounding what a single load reads.
 public type LoaderOptions record {|
-    # The maximum number of documents a single load returns. Acts as a hard cap so
-    # a large bucket cannot produce an unbounded result; once reached, traversal stops
-    # cleanly. Note that this bounds the document *count*, not total memory: the loaded
-    # documents are all retained until the load returns, so peak memory is bounded by
-    # `maxDocuments` times the extracted text size. Defaults to `1000`, one S3 listing page
-    int maxDocuments = 1000;
     # The maximum size, in bytes, of a single object read into memory. An object larger
     # than this fails with a clear `ai:Error` rather than risking an out-of-memory
     # condition (objects are extracted entirely in memory, never written to disk).

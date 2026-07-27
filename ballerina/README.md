@@ -74,8 +74,10 @@ import ballerinax/ai.aws.s3;
 ```ballerina
 s3:TextDataLoader loader = check new (
     {
-        accessKeyId: "<ACCESS_KEY_ID>",
-        secretAccessKey: "<SECRET_ACCESS_KEY>",
+        auth: {
+            accessKeyId: "<ACCESS_KEY_ID>",
+            secretAccessKey: "<SECRET_ACCESS_KEY>"
+        },
         region: "us-east-1"
     },
     [
@@ -112,52 +114,49 @@ The loader's first argument is either an
 — the `ballerinax/aws.s3` connector's own configuration, from which the loader builds a client —
 or an already-configured `s3:Client` you want it to reuse.
 
+`ConnectionConfig` has two fields: `auth` and `region`.
+
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `accessKeyId` | `string?` | — | Access key id; required for static auth |
-| `secretAccessKey` | `string?` | — | Secret access key; required for static auth |
-| `sessionToken` | `string?` | — | Session token, required for temporary (STS) credentials |
-| `region` | `string?` | `"us-east-1"` | **Must match the region each bucket was created in** — a mismatch fails with an opaque `PermanentRedirect` error. The bucket's region is shown in the S3 console's Buckets list |
-| `authType` | `AWS_STATIC_AUTH\|EC2_IAM_ROLE` | `AWS_STATIC_AUTH` | Selects static keys or EC2/ECS instance-metadata credentials |
-| `timeout`, `retryConfig`, `proxy`, `secureSocket`, … | — | — | The standard Ballerina HTTP client options the connector accepts |
+| `auth` | `StaticAuthConfig \| ProfileAuthConfig \| DEFAULT_CREDENTIALS` | — | How to authenticate (see below) |
+| `region` | `Region` | `US_EAST_1` (`"us-east-1"`) | **Must match the region each bucket was created in** — a mismatch fails with an opaque `PermanentRedirect` error. The bucket's region is shown in the S3 console's Buckets list |
 
 ```ballerina
 import ballerinax/aws.s3 as awsS3;
 
-// Static credentials
+// Static credentials (an access key pair)
 awsS3:ConnectionConfig config = {
-    accessKeyId: "AKIA...",
-    secretAccessKey: "...",
+    auth: {accessKeyId: "AKIA...", secretAccessKey: "..."},
     region: "us-east-1"
 };
 
-// Temporary (STS) credentials
+// Temporary (STS) credentials add a session token
 awsS3:ConnectionConfig config = {
-    accessKeyId: "ASIA...",
-    secretAccessKey: "...",
-    sessionToken: "...",
+    auth: {accessKeyId: "ASIA...", secretAccessKey: "...", sessionToken: "..."},
     region: "us-east-1"
 };
 
-// EC2/ECS IAM role - credentials come from instance metadata
-awsS3:ConnectionConfig config = {authType: awsS3:EC2_IAM_ROLE, region: "us-east-1"};
+// AWS default credential chain — environment variables, ECS container credentials,
+// and EC2/ECS instance-profile (IAM role) credentials, resolved automatically
+awsS3:ConnectionConfig config = {auth: awsS3:DEFAULT_CREDENTIALS, region: "us-east-1"};
+
+// A named profile from the shared AWS credentials file
+awsS3:ConnectionConfig config = {auth: {profileName: "prod"}, region: "us-east-1"};
 ```
 
-**Prefer the IAM-role form in production** when running on AWS: it needs no long-lived keys in
-configuration at all. The examples use static credentials only because they must run anywhere.
+**Prefer `DEFAULT_CREDENTIALS` in production** when running on AWS: it resolves the instance or
+task role automatically and needs no long-lived keys in configuration. The examples use static
+credentials only because they must run anywhere.
 
 #### Reusing an existing client
 
-Passing a ready `s3:Client` lets you share one client across several loaders, or apply HTTP
-options (retries, proxy, TLS settings) the loader itself does not surface:
+Passing a ready `s3:Client` lets you share one client across several loaders, or configure the
+connector in ways the loader's config does not surface:
 
 ```ballerina
 awsS3:Client s3Client = check new ({
-    accessKeyId: "AKIA...",
-    secretAccessKey: "...",
-    region: "us-east-1",
-    timeout: 120,
-    retryConfig: {count: 3, interval: 2}
+    auth: {accessKeyId: "AKIA...", secretAccessKey: "..."},
+    region: "us-east-1"
 });
 
 s3:TextDataLoader loader = check new (s3Client, [{bucket: "my-corpus-bucket"}]);
@@ -207,13 +206,15 @@ an entire corpus load.
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `maxDocuments` | `int` | `1000` | Hard cap on the documents returned by one `load()`, so a large bucket cannot produce an unbounded result |
 | `maxObjectSize` | `int` | `104857600` (100 MiB) | Largest single object read into memory; a bigger object fails with a clear error rather than risking an out-of-memory condition |
 
 ```ballerina
 s3:TextDataLoader loader = check new (connectionConfig, sources,
-        {maxDocuments: 250, maxObjectSize: 20 * 1024 * 1024});
+        {maxObjectSize: 20 * 1024 * 1024});
 ```
+
+Like the SharePoint data loader, there is **no document-count cap** — `load()` returns every
+matching object. See Limitations for the memory implication.
 
 ## Supported file types
 
@@ -236,48 +237,27 @@ Object metadata is attached to every document: `fileName` (the key), `mimeType`,
 
 ## Limitations
 
-Please read these before indexing a large or busy bucket. Several stem from gaps in the underlying
-[`ballerinax/aws.s3`](https://central.ballerina.io/ballerinax/aws.s3/3.5.1) connector rather than
-from S3 itself.
+Please read these before indexing a large or busy bucket.
 
-- **No pagination: a listing is capped at one page (1000 objects).** The connector never surfaces
-  `IsTruncated` or `NextContinuationToken`, and its `start-after` parameter is emitted without a
-  separator, which corrupts the signed request — so neither pagination mechanism is usable. If a
-  prefix holds more objects than fit in one page, the loader **fails with a clear error** rather
-  than silently returning a partial corpus, because a quietly incomplete RAG index produces
-  confidently wrong answers. Key-marker paging is already implemented and tested, and will work
-  unchanged once the connector is fixed.
-
-  Two consequences worth being explicit about:
-  - **Setting `maxDocuments` above 1000 cannot help** — the listing itself is the limit, not the
-    document cap. To load more than one page's worth, split the work across narrower `path`s.
-  - **Setting `maxDocuments` below the page size suppresses the error.** Reaching the cap is
-    treated as a deliberate bound, so the load succeeds with a bounded subset rather than failing,
-    and does so silently. That is the right behaviour when you *want* a sample, and the wrong one
-    if you assumed you got everything — so prefer narrowing `path` when completeness matters.
-- **A single page is not a consistent snapshot.** S3 listings are eventually consistent and
-  returned in key order. Under concurrent writes, objects added or removed during a load can be
-  missed or double-counted — inherent to key-marker paging — and the one-page cap makes it more
-  likely that recent writes fall outside what is read.
-- **Objects are read entirely into memory.** Extraction reads from an in-memory buffer so that no
-  temporary file is ever written, but each object must therefore fit in the heap. `maxObjectSize`
+- **The whole matching corpus is read into memory.** There is no document-count cap (matching the
+  SharePoint data loader); the loader paginates across every listing page and materializes every
+  document, because `ai:DataLoader.load()` returns a `Document[]` — there is no streaming or cursor
+  in the interface. A very large prefix therefore produces a correspondingly large in-memory
+  result. Narrow the `path`, or split the work across several loads, if that is a concern.
+- **A listing is not a consistent snapshot.** S3 listings are eventually consistent and returned
+  in key order, and the loader pages through them. Under concurrent writes, objects added or
+  removed mid-load can be missed or double-counted — inherent to paginated listing.
+- **Each object is read entirely into memory.** Extraction reads from an in-memory buffer so that
+  no temporary file is ever written, but each object must therefore fit in the heap. `maxObjectSize`
   (default 100 MiB) bounds this; a larger object is a clear error, not an out-of-memory crash.
-- **Non-recursive filtering happens client-side.** S3's `delimiter` cannot be used, because the
-  connector discards `CommonPrefixes` and `S3Object[]` cannot represent them. `recursive: false`
-  therefore lists **every** key under the prefix and discards the nested ones. On a wide prefix
-  this wastes listing bandwidth and counts against the one-page cap — prefer a narrower `path`.
-- **Nested prefixes and keys fail on real S3 with `SignatureDoesNotMatch`.** The connector's SigV4
-  signing reverts `%2F` back to `/` in canonical query values (correct for the URL path, wrong for
-  a query value), so it signs `prefix=docs/2026/` while AWS canonicalizes `prefix=docs%2F2026%2F` —
-  the signatures never agree. Because the loader passes your `path` as the `prefix` query
-  parameter, **any prefix or key containing a `/` fails**: only whole-bucket loads (`path: ""`) and
-  single-segment top-level prefixes with no `/` work against real S3 today. Keys containing spaces
-  fail for a related reason (the connector form-encodes a space as `+` where SigV4 requires `%20`).
-  There is no workaround short of an upstream connector fix; both defects are detailed for the
-  maintainers in [docs/HANDOVER.md](../docs/HANDOVER.md#connector-bugs--for-the-upstream-report).
-- **An exact key is resolved by listing its prefix.** If more than 1000 keys share the exact key
-  as a prefix and the key itself sorts beyond the first page, the lookup misses and silently
-  falls back to a prefix walk. Rare, but it follows from the one-page cap above.
+- **Non-recursive filtering happens client-side.** The loader lists without a `delimiter` and
+  filters nested keys itself, so `recursive: false` still *lists* every key under the prefix and
+  discards the nested ones. On a wide prefix this costs listing bandwidth — prefer a narrower `path`.
+- **No `versionId` selection.** The loader always reads the current version of each object. The
+  underlying connector *can* fetch a specific version, but the loader does not expose it, so a
+  corpus cannot be pinned to specific object versions.
+- **An exact key is resolved by listing its prefix**, not with a `HEAD`, to avoid a download just
+  to test existence. Functionally transparent; noted for cost accounting on very large prefixes.
 - **Legacy binary Office and spreadsheets are unsupported.** `.doc`, `.ppt`, `.xls` and `.xlsx`
   are recognised only so they can be rejected with a format-specific message or skipped. This
   matches `ballerina/ai`. Convert `.doc`/`.ppt` to `.docx`/`.pptx` or PDF; export spreadsheets to
@@ -289,11 +269,9 @@ from S3 itself.
   error rather than skipping it. This is deliberate — a silently incomplete RAG index is worse
   than a failed one — but it means a corpus in flux may need a retry. (Objects of *unsupported
   types* are skipped, not failed; this applies to genuine read/parse failures.)
-- **No `versionId`.** Pinning a reproducible corpus to specific object versions is not possible:
-  the connector's `getObject` takes no `versionId` parameter.
-- **No requester-pays support.** Cross-account requester-pays buckets will fail, because the
-  connector cannot send the `x-amz-request-payer` header (only `x-amz-meta-*` headers can be set).
-- **AWS endpoints only.** The connector hardcodes `https://` and `amazonaws.com` with no endpoint
+- **No requester-pays support.** The connector's configuration exposes no requester-pays option,
+  so cross-account requester-pays buckets cannot be read.
+- **AWS endpoints only.** The connector's `ConnectionConfig` takes a `region` but no endpoint
   override, so S3-compatible services (MinIO, LocalStack, Cloudflare R2) cannot be targeted.
 - **All buckets in one loader share one region**, since the region is set on the connection. A
   bucket in a different region fails with an opaque AWS redirect error; use one loader per region.

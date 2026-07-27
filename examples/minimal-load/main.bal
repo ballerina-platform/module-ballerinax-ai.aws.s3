@@ -17,25 +17,24 @@
 import ballerina/ai;
 import ballerina/io;
 import ballerinax/ai.aws.s3;
+import ballerinax/aws.s3 as awsS3;
 
 // Supplied via Config.toml — never hard-code credentials.
 configurable string accessKeyId = ?;
 configurable string secretAccessKey = ?;
-configurable string region = "us-east-1";
+configurable awsS3:Region region = awsS3:US_EAST_1;
 configurable string bucket = ?;
 configurable string prefix = "";
 
 public function main() returns error? {
     s3:TextDataLoader loader = check new (
-        {accessKeyId, secretAccessKey, region},
+        {auth: {accessKeyId, secretAccessKey}, region},
         [
             {
                 bucket,
                 targets: [{path: prefix, recursive: true}]
             }
-        ],
-        // Keep this first run small and predictable.
-        {maxDocuments: 20}
+        ]
     );
 
     // `load()` returns a bare document when exactly one object is resolved, and an array

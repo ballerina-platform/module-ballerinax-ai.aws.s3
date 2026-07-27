@@ -21,33 +21,21 @@ For the full API, configuration reference, supported file types, and usage guide
 
 ## Limitations
 
-Please read these before indexing a large or busy bucket. Several stem from gaps in the underlying
-[`ballerinax/aws.s3`](https://central.ballerina.io/ballerinax/aws.s3/3.5.1) connector rather than
-from S3 itself.
+Please read these before indexing a large or busy bucket.
 
-- **No pagination: a listing is capped at one page (1000 objects).** The connector never surfaces
-  `IsTruncated` or `NextContinuationToken`, and its `start-after` parameter is emitted without a
-  separator, corrupting the signed request — so neither pagination mechanism is usable. If a prefix
-  holds more objects than fit in one page, the loader **fails with a clear error** rather than
-  silently returning a partial corpus, because a quietly incomplete RAG index produces confidently
-  wrong answers. Narrow the prefix or lower `maxDocuments`. Key-marker paging is already
-  implemented and tested, and will work unchanged once the connector is fixed.
-- **A single page is not a consistent snapshot.** S3 listings are eventually consistent and
-  returned in key order. Under concurrent writes, objects added or removed during a load can be
-  missed or double-counted — inherent to key-marker paging — and the one-page cap makes it more
-  likely that recent writes fall outside what is read.
-- **Objects are read entirely into memory,** so that no temporary file is ever written. Each object
-  must therefore fit in the heap; `maxObjectSize` (default 100 MiB) bounds this, and a larger
-  object produces a clear error rather than an out-of-memory crash.
-- **Non-recursive filtering happens client-side.** S3's `delimiter` cannot be used, because the
-  connector discards `CommonPrefixes`. `recursive: false` therefore lists **every** key under the
-  prefix and discards the nested ones — on a wide prefix this wastes listing bandwidth and counts
-  against the one-page cap.
-- **Nested prefixes and keys fail on real S3** with `SignatureDoesNotMatch`. The connector's SigV4
-  signing mishandles `/` in query values, so any `path` containing a `/` (i.e. most nested prefixes
-  and keys) cannot be listed; only whole-bucket and single-segment top-level loads work. Keys with
-  spaces fail similarly. Detailed for the maintainers in
-  [docs/HANDOVER.md](docs/HANDOVER.md#connector-bugs--for-the-upstream-report).
+- **The whole matching corpus is read into memory.** There is no document-count cap (matching the
+  SharePoint data loader); the loader paginates across every listing page and materializes every
+  document, because `ai:DataLoader.load()` returns a `Document[]` with no streaming. A very large
+  prefix produces a correspondingly large in-memory result — narrow the `path` if that matters.
+- **A listing is not a consistent snapshot.** S3 listings are eventually consistent and key-ordered;
+  under concurrent writes, objects added or removed mid-load can be missed or double-counted.
+- **Each object is read entirely into memory,** so that no temporary file is ever written.
+  `maxObjectSize` (default 100 MiB) bounds this; a larger object is a clear error, not an OOM crash.
+- **Non-recursive filtering happens client-side** — `recursive: false` still lists every key under
+  the prefix and discards the nested ones, costing listing bandwidth on a wide prefix.
+- **No `versionId` selection, no requester-pays, AWS endpoints only.** The loader reads current
+  object versions; requester-pays buckets and S3-compatible endpoints (MinIO, LocalStack, R2) are
+  not supported by the connector's configuration.
 - **Legacy binary Office and spreadsheets are unsupported** (`.doc`, `.ppt`, `.xls`, `.xlsx`),
   matching `ballerina/ai`. Convert `.doc`/`.ppt` to `.docx`/`.pptx` or PDF; export spreadsheets to
   `.csv`. (`.xlsx` is excluded despite being OOXML — extracting meaningful text from a spreadsheet

@@ -37,7 +37,6 @@ public isolated class TextDataLoader {
 
     private final s3:Client s3Client;
     private final readonly & Source[] sources;
-    private final int maxDocuments;
     private final int maxObjectSize;
 
     # Initializes the AWS S3 data loader.
@@ -53,15 +52,11 @@ public isolated class TextDataLoader {
         if sources.length() == 0 {
             return error ai:Error("At least one source must be provided to the AWS S3 data loader");
         }
-        if options.maxDocuments < 1 {
-            return error ai:Error("maxDocuments must be at least 1");
-        }
         if options.maxObjectSize < 1 {
             return error ai:Error("maxObjectSize must be at least 1");
         }
         self.s3Client = s3 is s3:Client ? s3 : check buildS3Client(s3);
         self.sources = sources.cloneReadOnly();
-        self.maxDocuments = options.maxDocuments;
         self.maxObjectSize = options.maxObjectSize;
     }
 
@@ -73,11 +68,7 @@ public isolated class TextDataLoader {
         ai:Document[] documents = [];
         foreach Source src in self.sources {
             foreach Target target in src.targets {
-                if documents.length() >= self.maxDocuments {
-                    break;
-                }
-                ai:Document[] loaded =
-                    check self.loadTarget(src.bucket, target, self.maxDocuments - documents.length());
+                ai:Document[] loaded = check self.loadTarget(src.bucket, target);
                 documents.push(...loaded);
             }
         }
@@ -90,18 +81,18 @@ public isolated class TextDataLoader {
     // Loads a single target, choosing prefix traversal or exact-key resolution. A value
     // ending in `/` (or empty) is a prefix; anything else is tried as an exact key first and
     // falls back to a prefix on a miss.
-    private isolated function loadTarget(string bucket, Target target, int budget)
+    private isolated function loadTarget(string bucket, Target target)
             returns ai:Document[]|ai:Error {
         string path = target.path;
         if path == "" || path.endsWith("/") {
-            return self.loadPrefix(bucket, path, target.recursive, target.includeExtensions, budget);
+            return self.loadPrefix(bucket, path, target.recursive, target.includeExtensions);
         }
         S3Item? exact = check self.findExactKey(bucket, path);
         if exact is S3Item {
             return [check self.loadExactKey(bucket, exact)];
         }
         // Exact-key miss: treat the value as a prefix instead.
-        return self.loadPrefix(bucket, path, target.recursive, target.includeExtensions, budget);
+        return self.loadPrefix(bucket, path, target.recursive, target.includeExtensions);
     }
 
     // Resolves an exact key by listing under it and looking for an identical key. Listing
@@ -140,20 +131,18 @@ public isolated class TextDataLoader {
         return document;
     }
 
-    // Lists a prefix and loads its supported objects, paginating with key-marker paging.
-    // The loop advances by the last key seen and stops on the last page, a satisfied budget,
-    // a zero-item page, or a repeated marker — so it can never spin forever.
+    // Lists a prefix and loads all its supported objects, paginating with key-marker paging.
+    // The loop advances by the last key seen and stops on the last page, a zero-item page, or a
+    // repeated marker — so it reads the whole prefix and can never spin forever. Like the
+    // SharePoint loader, there is no document cap: every matching object is returned.
     private isolated function loadPrefix(string bucket, string prefix, boolean recursive,
-            string[]? includeExtensions, int budget) returns ai:Document[]|ai:Error {
+            string[]? includeExtensions) returns ai:Document[]|ai:Error {
         ai:Document[] documents = [];
         string? marker = ();
         string? effectivePrefix = prefix == "" ? () : prefix;
         while true {
             S3Page page = check listObjectPage(self.s3Client, bucket, effectivePrefix, marker, MAX_KEYS_PER_PAGE);
             foreach S3Item item in page.items {
-                if documents.length() >= budget {
-                    return documents;
-                }
                 if !includeInPrefixWalk(item, prefix, recursive, includeExtensions) {
                     continue;
                 }
@@ -165,9 +154,6 @@ public isolated class TextDataLoader {
             if !page.truncated {
                 break; // last page
             }
-            if documents.length() >= budget {
-                break; // budget satisfied; no need to page further
-            }
             if page.items.length() == 0 {
                 break; // GUARD: a truncated but empty page cannot advance the marker
             }
@@ -177,8 +163,7 @@ public isolated class TextDataLoader {
                 // advance paging, so bail rather than loop forever. Not expected in practice.
                 return error ai:Error(string `Listing for bucket '${bucket}'` +
                     (prefix == "" ? "" : string ` under prefix '${prefix}'`) +
-                    string ` is truncated and cannot be fully read. Narrow the prefix or lower ` +
-                    string `'maxDocuments'.`);
+                    string ` is truncated and cannot be fully read. Narrow the prefix.`);
             }
             marker = nextMarker;
         }

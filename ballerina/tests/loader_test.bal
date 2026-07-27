@@ -38,15 +38,6 @@ isolated function testInitRejectsEmptySources() {
 }
 
 @test:Config {}
-isolated function testInitRejectsNonPositiveMaxDocuments() {
-    TextDataLoader|ai:Error loader = new (testConnection(), [{bucket: TEST_BUCKET}], {maxDocuments: 0});
-    test:assertTrue(loader is ai:Error, "Expected an error for a non-positive maxDocuments");
-    if loader is ai:Error {
-        test:assertEquals(loader.message(), "maxDocuments must be at least 1");
-    }
-}
-
-@test:Config {}
 isolated function testInitRejectsNonPositiveMaxObjectSize() {
     TextDataLoader|ai:Error loader = new (testConnection(), [{bucket: TEST_BUCKET}], {maxObjectSize: 0});
     test:assertTrue(loader is ai:Error, "Expected an error for a non-positive maxObjectSize");

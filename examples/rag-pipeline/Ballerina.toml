@@ -12,3 +12,9 @@ org = "ballerinax"
 name = "ai.aws.s3"
 version = "1.0.0"
 repository = "local"
+
+[[dependency]]
+org = "ballerinax"
+name = "aws.s3"
+version = "5.0.0"
+repository = "local"

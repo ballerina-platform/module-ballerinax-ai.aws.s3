@@ -85,10 +85,10 @@ preview   : # Field notes  These are the raw notes taken during the Q1 review...
 - The configurable is called `prefix` because that is the common case, but the underlying
   `Target` field is `path` and also accepts an **exact object key** — `path: "reports/q1.pdf"`
   loads that one object.
-- `maxDocuments` is set to 20 so a large bucket cannot flood your terminal on a first run.
 - `recursive: true` descends into nested prefixes. Set it to `false` to load only the keys
   directly under `prefix`.
-- To run this on EC2 with an attached IAM role instead of static keys, drop the `accessKeyId`
-  and `secretAccessKey` configurables and pass `auth: {credentialSource: s3:IAM_ROLE}`.
-- If the prefix holds more than 1000 objects the load fails with an explicit error rather than
-  returning a partial set — see [Limitations](../../ballerina/README.md#limitations).
+- The loader reads the **whole** matching corpus (paginating across listing pages), so a large
+  bucket produces a large result — every document is held in memory until `load()` returns.
+- To run this on EC2/ECS with an attached role instead of static keys, drop the `accessKeyId`
+  and `secretAccessKey` configurables and pass `auth: s3:DEFAULT_CREDENTIALS` (the AWS default
+  credential chain — environment, container, and instance-profile credentials).
