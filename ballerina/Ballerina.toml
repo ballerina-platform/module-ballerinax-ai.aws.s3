@@ -17,7 +17,7 @@ graalvmCompatible = false
 groupId = "io.ballerina.lib"
 artifactId = "ai.aws.s3-native"
 version = "1.0.1"
-path = "../native/build/libs/ai.aws.s3-native-1.0.1-SNAPSHOT.jar"
+path = "../native/build/libs/ai.aws.s3-native-1.0.1.jar"
 
 # Apache Tika: the PDF parser module only. Dispatch is explicit (PDFParser) — Tika's
 # AutoDetectParser is never used. The OOXML formats are handled by POI directly rather than
