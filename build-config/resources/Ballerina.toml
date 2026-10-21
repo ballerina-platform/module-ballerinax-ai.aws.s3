@@ -6,7 +6,7 @@ version = "@toml.version@"
 license = ["Apache-2.0"]
 icon = "icon.png"
 authors = ["Ballerina"]
-keywords = ["Vendor/Amazon", "Cloud/Object Storage", "Area/AI & Machine Learning", "Type/Data Loader", "Type/Vector Store", "s3", "vector", "vector store", "vector search", "Name/AWS S3"]
+keywords = ["Vendor/Amazon", "Cloud/Object Storage", "Area/AI & Machine Learning", "Type/Data Loader", "Type/Vector Store", "s3", "vector", "vector store", "vector search", "Name/AWS AI S3"]
 repository = "https://github.com/ballerina-platform/module-ballerinax-ai.aws.s3"
 
 [platform.java25]

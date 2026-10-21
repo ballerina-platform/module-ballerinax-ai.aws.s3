@@ -2,11 +2,11 @@
 distribution = "2201.14.0"
 org = "ballerinax"
 name = "ai.aws.s3"
-version = "1.0.0"
+version = "1.0.1"
 license = ["Apache-2.0"]
 icon = "icon.png"
 authors = ["Ballerina"]
-keywords = ["Vendor/Amazon", "Cloud/Object Storage", "Area/AI & Machine Learning", "Type/Data Loader", "Type/Vector Store", "s3", "vector", "vector store", "vector search", "Name/AWS S3"]
+keywords = ["Vendor/Amazon", "Cloud/Object Storage", "Area/AI & Machine Learning", "Type/Data Loader", "Type/Vector Store", "s3", "vector", "vector store", "vector search", "Name/AWS AI S3"]
 repository = "https://github.com/ballerina-platform/module-ballerinax-ai.aws.s3"
 
 [platform.java25]
@@ -16,8 +16,8 @@ graalvmCompatible = false
 [[platform.java25.dependency]]
 groupId = "io.ballerina.lib"
 artifactId = "ai.aws.s3-native"
-version = "1.0.0"
-path = "../native/build/libs/ai.aws.s3-native-1.0.0.jar"
+version = "1.0.1"
+path = "../native/build/libs/ai.aws.s3-native-1.0.1-SNAPSHOT.jar"
 
 # Apache Tika: the PDF parser module only. Dispatch is explicit (PDFParser) — Tika's
 # AutoDetectParser is never used. The OOXML formats are handled by POI directly rather than
